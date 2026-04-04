@@ -14,7 +14,21 @@ class NormalizedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        import time
+        max_attempts = 8
+        
+        # Free-tier throttling: wait 4 seconds between any request to keep RPM around 15.
+        time.sleep(4.5) 
+        
+        for attempt in range(max_attempts):
+            try:
+                return normalize_content(super().invoke(input, config, **kwargs))
+            except Exception as e:
+                if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < max_attempts - 1:
+                    print(f"⚠️ Rate limit inside LLM. Pausing 60s...")
+                    time.sleep(65)
+                else:
+                    raise e
 
 
 class GoogleClient(BaseLLMClient):
