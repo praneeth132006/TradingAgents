@@ -286,18 +286,21 @@ def build_analysis_prompt(ticker, info, df, period_label):
 
     fund_text = "\n".join(fundamentals) if fundamentals else "  Not available"
 
+    # Detect currency
+    cur = "₹" if (".NS" in ticker or ".BO" in ticker) else "$"
+
     # Technical summary
     tech_text = f"""
-  Latest Close: ${latest['Close']:.2f}
-  Change: ${price_change:+.2f} ({pct_change:+.2f}%)
+  Latest Close: {cur}{latest['Close']:.2f}
+  Change: {cur}{price_change:+.2f} ({pct_change:+.2f}%)
   RSI(14): {latest['RSI']:.1f}
   MACD: {latest['MACD']:.4f}
   MACD Signal: {latest['MACD_Signal']:.4f}
   MACD Histogram: {latest['MACD_Hist']:.4f}
-  SMA 20: ${latest['SMA_20']:.2f}
-  SMA 50: ${latest['SMA_50']:.2f}
-  Bollinger Upper: ${latest['BB_Upper']:.2f}
-  Bollinger Lower: ${latest['BB_Lower']:.2f}
+  SMA 20: {cur}{latest['SMA_20']:.2f}
+  SMA 50: {cur}{latest['SMA_50']:.2f}
+  Bollinger Upper: {cur}{latest['BB_Upper']:.2f}
+  Bollinger Lower: {cur}{latest['BB_Lower']:.2f}
   Volume: {latest['Volume']:,.0f}
   Avg Volume (20d): {latest['Vol_SMA']:,.0f}
 """
@@ -305,7 +308,12 @@ def build_analysis_prompt(ticker, info, df, period_label):
     # Recent price action (last 10 days)
     recent = df.tail(10)[['Close', 'Volume', 'RSI']].to_string()
 
+    market_context = "Indian stock market (NSE/BSE). Use ₹ (Indian Rupees) for all prices." if (".NS" in ticker or ".BO" in ticker) else "US stock market. Use $ (USD) for all prices."
+
     prompt = f"""You are an expert financial analyst. Analyze {ticker} ({info.get('longName', ticker)}) and provide a comprehensive trading analysis.
+
+## Market
+{market_context}
 
 ## Company Info
 - Sector: {info.get('sector', 'N/A')}
@@ -371,17 +379,19 @@ def run_gemini_analysis(prompt: str, api_key: str):
     return response.text
 
 
-def format_large_number(num):
+def format_large_number(num, currency="$"):
     """Format large numbers (market cap, revenue, etc.)"""
     if num is None:
         return "N/A"
     if abs(num) >= 1e12:
-        return f"${num/1e12:.2f}T"
+        return f"{currency}{num/1e12:.2f}T"
     if abs(num) >= 1e9:
-        return f"${num/1e9:.2f}B"
+        return f"{currency}{num/1e9:.2f}B"
     if abs(num) >= 1e6:
-        return f"${num/1e6:.2f}M"
-    return f"${num:,.0f}"
+        return f"{currency}{num/1e6:.2f}M"
+    if abs(num) >= 1e5:
+        return f"{currency}{num/1e5:.2f}L"
+    return f"{currency}{num:,.0f}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -399,7 +409,29 @@ st.markdown("""
 # Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
-    ticker = st.text_input("Stock Ticker", value="AAPL", help="Enter a valid stock symbol").upper().strip()
+
+    market = st.selectbox("Market", ["🇺🇸 US (NYSE/NASDAQ)", "🇮🇳 India NSE", "🇮🇳 India BSE"], index=0)
+
+    if "US" in market:
+        default_ticker = "AAPL"
+        ticker_help = "e.g., AAPL, GOOGL, TSLA, MSFT, NVDA"
+        currency = "$"
+        suffix = ""
+    elif "NSE" in market:
+        default_ticker = "RELIANCE"
+        ticker_help = "e.g., RELIANCE, TCS, INFY, HDFCBANK, TATAMOTORS"
+        currency = "₹"
+        suffix = ".NS"
+    else:
+        default_ticker = "RELIANCE"
+        ticker_help = "e.g., RELIANCE, TCS, INFY, HDFCBANK, TATAMOTORS"
+        currency = "₹"
+        suffix = ".BO"
+
+    raw_ticker = st.text_input("Stock Ticker", value=default_ticker, help=ticker_help).upper().strip()
+    # Build the Yahoo Finance ticker (auto-append suffix)
+    ticker = raw_ticker + suffix if suffix and not raw_ticker.endswith(suffix) else raw_ticker
+    display_ticker = raw_ticker  # Clean name for display
 
     period_options = {
         "1 Month": "1mo",
@@ -416,7 +448,7 @@ with st.sidebar:
     run_ai = st.button("🚀 Run Full AI Analysis", type="primary", use_container_width=True)
 
     st.markdown("---")
-    st.markdown("""
+    st.markdown(f"""
     <div style="padding:0.8rem; border-radius:12px; background:rgba(99,102,241,0.1); border:1px solid rgba(99,102,241,0.2);">
         <p style="color:#a5b4fc; font-size:0.75rem; margin:0;"><strong>HOW IT WORKS</strong></p>
         <p style="color:#94a3b8; font-size:0.72rem; margin:0.3rem 0 0 0;">
@@ -428,6 +460,8 @@ with st.sidebar:
         </p>
     </div>
     """, unsafe_allow_html=True)
+    if suffix:
+        st.caption(f"Yahoo Finance ticker: `{ticker}`")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -460,8 +494,8 @@ if ticker:
             st.markdown(f"""
             <div class="metric-card">
                 <h4>Current Price</h4>
-                <div class="value">${latest['Close']:.2f}</div>
-                <div class="{change_class}" style="font-size:0.85rem;">{arrow} ${abs(price_change):.2f} ({pct_change:+.2f}%)</div>
+                <div class="value">{currency}{latest['Close']:.2f}</div>
+                <div class="{change_class}" style="font-size:0.85rem;">{arrow} {currency}{abs(price_change):.2f} ({pct_change:+.2f}%)</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -481,7 +515,7 @@ if ticker:
             st.markdown(f"""
             <div class="metric-card">
                 <h4>Market Cap</h4>
-                <div class="value">{format_large_number(info.get('marketCap'))}</div>
+                <div class="value">{format_large_number(info.get('marketCap'), currency)}</div>
                 <div style="color:#94a3b8; font-size:0.85rem;">{info.get('sector', 'N/A')}</div>
             </div>
             """, unsafe_allow_html=True)
