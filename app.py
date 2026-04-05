@@ -394,6 +394,219 @@ def format_large_number(num, currency="$"):
     return f"{currency}{num:,.0f}"
 
 
+def compute_signal_scores(df, info):
+    """Compute individual signal scores (0-100) for each indicator."""
+    latest = df.iloc[-1]
+    scores = {}
+
+    # RSI Score: 30-70 is neutral, <30 oversold (bullish), >70 overbought (bearish)
+    rsi = latest['RSI']
+    if rsi < 30:
+        scores['RSI'] = {'score': 75, 'signal': 'Bullish', 'detail': f'RSI {rsi:.1f} — Oversold (potential bounce)', 'color': '#34d399'}
+    elif rsi < 45:
+        scores['RSI'] = {'score': 60, 'signal': 'Slightly Bullish', 'detail': f'RSI {rsi:.1f} — Below neutral', 'color': '#86efac'}
+    elif rsi <= 55:
+        scores['RSI'] = {'score': 50, 'signal': 'Neutral', 'detail': f'RSI {rsi:.1f} — Neutral zone', 'color': '#fbbf24'}
+    elif rsi <= 70:
+        scores['RSI'] = {'score': 40, 'signal': 'Slightly Bearish', 'detail': f'RSI {rsi:.1f} — Above neutral', 'color': '#fb923c'}
+    else:
+        scores['RSI'] = {'score': 25, 'signal': 'Bearish', 'detail': f'RSI {rsi:.1f} — Overbought (potential drop)', 'color': '#f87171'}
+
+    # MACD Score
+    macd_hist = latest['MACD_Hist']
+    if macd_hist > 0.5:
+        scores['MACD'] = {'score': 80, 'signal': 'Strong Bullish', 'detail': 'MACD above signal — strong upward momentum', 'color': '#34d399'}
+    elif macd_hist > 0:
+        scores['MACD'] = {'score': 60, 'signal': 'Bullish', 'detail': 'MACD above signal — positive momentum', 'color': '#86efac'}
+    elif macd_hist > -0.5:
+        scores['MACD'] = {'score': 40, 'signal': 'Bearish', 'detail': 'MACD below signal — negative momentum', 'color': '#fb923c'}
+    else:
+        scores['MACD'] = {'score': 20, 'signal': 'Strong Bearish', 'detail': 'MACD well below signal — strong downward momentum', 'color': '#f87171'}
+
+    # Moving Average Score (price vs SMA20 and SMA50)
+    close = latest['Close']
+    sma20 = latest['SMA_20']
+    sma50 = latest['SMA_50']
+    ma_score = 50
+    if close > sma20 and close > sma50:
+        ma_score = 80
+        ma_signal, ma_detail, ma_color = 'Bullish', 'Price above both SMA 20 & SMA 50', '#34d399'
+    elif close > sma20:
+        ma_score = 60
+        ma_signal, ma_detail, ma_color = 'Slightly Bullish', 'Price above SMA 20, below SMA 50', '#86efac'
+    elif close > sma50:
+        ma_score = 45
+        ma_signal, ma_detail, ma_color = 'Mixed', 'Price below SMA 20, above SMA 50', '#fbbf24'
+    else:
+        ma_score = 20
+        ma_signal, ma_detail, ma_color = 'Bearish', 'Price below both SMA 20 & SMA 50', '#f87171'
+    if sma20 > sma50:
+        ma_detail += ' • Golden Cross (SMA20 > SMA50)'
+        ma_score = min(ma_score + 10, 100)
+    else:
+        ma_detail += ' • Death Cross (SMA20 < SMA50)'
+        ma_score = max(ma_score - 10, 0)
+    scores['Moving Avg'] = {'score': ma_score, 'signal': ma_signal, 'detail': ma_detail, 'color': ma_color}
+
+    # Bollinger Band Score
+    bb_upper = latest['BB_Upper']
+    bb_lower = latest['BB_Lower']
+    bb_range = bb_upper - bb_lower if bb_upper != bb_lower else 1
+    bb_position = (close - bb_lower) / bb_range  # 0 = at lower, 1 = at upper
+    if bb_position < 0.1:
+        scores['Bollinger'] = {'score': 70, 'signal': 'Bullish', 'detail': 'Price near lower band — potential bounce', 'color': '#34d399'}
+    elif bb_position < 0.3:
+        scores['Bollinger'] = {'score': 60, 'signal': 'Slightly Bullish', 'detail': 'Price in lower zone of bands', 'color': '#86efac'}
+    elif bb_position < 0.7:
+        scores['Bollinger'] = {'score': 50, 'signal': 'Neutral', 'detail': 'Price in middle of bands', 'color': '#fbbf24'}
+    elif bb_position < 0.9:
+        scores['Bollinger'] = {'score': 35, 'signal': 'Slightly Bearish', 'detail': 'Price in upper zone of bands', 'color': '#fb923c'}
+    else:
+        scores['Bollinger'] = {'score': 25, 'signal': 'Bearish', 'detail': 'Price near upper band — potential pullback', 'color': '#f87171'}
+
+    # Volume Score
+    vol_ratio = latest['Volume'] / latest['Vol_SMA'] if latest['Vol_SMA'] > 0 else 1
+    price_up = latest['Close'] >= df.iloc[-2]['Close'] if len(df) > 1 else True
+    if vol_ratio > 1.5 and price_up:
+        scores['Volume'] = {'score': 80, 'signal': 'Strong Bullish', 'detail': f'High volume ({vol_ratio:.1f}x avg) on up move', 'color': '#34d399'}
+    elif vol_ratio > 1.2 and price_up:
+        scores['Volume'] = {'score': 65, 'signal': 'Bullish', 'detail': f'Above-avg volume ({vol_ratio:.1f}x) on up move', 'color': '#86efac'}
+    elif vol_ratio > 1.5 and not price_up:
+        scores['Volume'] = {'score': 25, 'signal': 'Bearish', 'detail': f'High volume ({vol_ratio:.1f}x avg) on down move', 'color': '#f87171'}
+    elif vol_ratio < 0.7:
+        scores['Volume'] = {'score': 45, 'signal': 'Low Activity', 'detail': f'Below-avg volume ({vol_ratio:.1f}x) — weak conviction', 'color': '#fbbf24'}
+    else:
+        scores['Volume'] = {'score': 50, 'signal': 'Neutral', 'detail': f'Normal volume ({vol_ratio:.1f}x avg)', 'color': '#fbbf24'}
+
+    # Fundamental Score (if available)
+    pe = info.get('trailingPE')
+    roe = info.get('returnOnEquity')
+    dte = info.get('debtToEquity')
+    fund_score = 50
+    fund_parts = []
+    if pe is not None:
+        if pe < 15: fund_score += 15; fund_parts.append(f'Low P/E ({pe:.1f})')
+        elif pe < 25: fund_score += 5; fund_parts.append(f'Fair P/E ({pe:.1f})')
+        else: fund_score -= 10; fund_parts.append(f'High P/E ({pe:.1f})')
+    if roe is not None:
+        if roe > 0.2: fund_score += 15; fund_parts.append(f'Strong ROE ({roe*100:.0f}%)')
+        elif roe > 0.1: fund_score += 5; fund_parts.append(f'Good ROE ({roe*100:.0f}%)')
+        else: fund_score -= 5; fund_parts.append(f'Weak ROE ({roe*100:.0f}%)')
+    if dte is not None:
+        if dte < 50: fund_score += 10; fund_parts.append('Low debt')
+        elif dte < 100: fund_parts.append('Moderate debt')
+        else: fund_score -= 10; fund_parts.append('High debt')
+    fund_score = max(0, min(100, fund_score))
+    fund_detail = ' • '.join(fund_parts) if fund_parts else 'Limited data available'
+    if fund_score >= 65:
+        fund_color = '#34d399'; fund_signal = 'Strong'
+    elif fund_score >= 45:
+        fund_color = '#fbbf24'; fund_signal = 'Average'
+    else:
+        fund_color = '#f87171'; fund_signal = 'Weak'
+    scores['Fundamentals'] = {'score': fund_score, 'signal': fund_signal, 'detail': fund_detail, 'color': fund_color}
+
+    return scores
+
+
+def build_gauge_chart(value, title, min_val=0, max_val=100):
+    """Build a semicircular gauge chart."""
+    if value >= 65:
+        bar_color = '#34d399'
+    elif value >= 45:
+        bar_color = '#fbbf24'
+    else:
+        bar_color = '#f87171'
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        title={'text': title, 'font': {'size': 16, 'color': '#a5b4fc'}},
+        number={'font': {'size': 36, 'color': '#e2e8f0'}},
+        gauge={
+            'axis': {'range': [min_val, max_val], 'tickcolor': '#475569', 'tickfont': {'color': '#64748b'}},
+            'bar': {'color': bar_color, 'thickness': 0.75},
+            'bgcolor': '#1e293b',
+            'bordercolor': 'rgba(99,102,241,0.2)',
+            'steps': [
+                {'range': [0, 35], 'color': 'rgba(248,113,113,0.15)'},
+                {'range': [35, 65], 'color': 'rgba(251,191,36,0.15)'},
+                {'range': [65, 100], 'color': 'rgba(52,211,153,0.15)'}
+            ],
+            'threshold': {
+                'line': {'color': '#e2e8f0', 'width': 2},
+                'thickness': 0.8,
+                'value': value
+            }
+        }
+    ))
+    fig.update_layout(
+        height=220,
+        margin=dict(t=50, b=10, l=30, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Inter')
+    )
+    return fig
+
+
+def build_radar_chart(scores):
+    """Build a radar/spider chart showing all signal dimensions."""
+    categories = list(scores.keys())
+    values = [scores[k]['score'] for k in categories]
+    # Close the polygon
+    categories_closed = categories + [categories[0]]
+    values_closed = values + [values[0]]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=categories_closed,
+        fill='toself',
+        fillcolor='rgba(99,102,241,0.2)',
+        line=dict(color='#818cf8', width=2.5),
+        marker=dict(size=8, color='#a5b4fc'),
+        name='Signal Strength'
+    ))
+
+    # Add a "neutral" reference ring at 50
+    neutral_vals = [50] * (len(categories) + 1)
+    fig.add_trace(go.Scatterpolar(
+        r=neutral_vals,
+        theta=categories_closed,
+        line=dict(color='rgba(251,191,36,0.4)', width=1, dash='dash'),
+        name='Neutral (50)',
+        showlegend=True
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            bgcolor='rgba(15,23,42,0.8)',
+            radialaxis=dict(
+                visible=True, range=[0, 100],
+                gridcolor='rgba(148,163,184,0.1)',
+                tickfont=dict(color='#64748b', size=10),
+                tickvals=[0, 25, 50, 75, 100]
+            ),
+            angularaxis=dict(
+                gridcolor='rgba(148,163,184,0.15)',
+                tickfont=dict(color='#a5b4fc', size=12, family='Inter')
+            )
+        ),
+        height=400,
+        margin=dict(t=30, b=30, l=60, r=60),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Inter', color='#94a3b8'),
+        showlegend=True,
+        legend=dict(bgcolor='rgba(0,0,0,0)', font=dict(size=11))
+    )
+    return fig
+
+
+
+
 # ─────────────────────────────────────────────────────────────────────
 # App Layout
 # ─────────────────────────────────────────────────────────────────────
@@ -547,6 +760,108 @@ if ticker:
         st.markdown("### 📊 Interactive Technical Chart")
         chart = build_price_chart(df, ticker)
         st.plotly_chart(chart, use_container_width=True)
+
+        # ── Visual Signal Dashboard ──
+        st.markdown("### 🎯 Signal Dashboard")
+        st.caption("Each indicator is scored 0-100. Green (65+) = Bullish, Yellow (35-65) = Neutral, Red (<35) = Bearish")
+
+        scores = compute_signal_scores(df, info)
+        overall_score = sum(s['score'] for s in scores.values()) / len(scores)
+
+        # Overall signal label
+        if overall_score >= 65:
+            overall_label = "BULLISH"
+            overall_emoji = "🟢"
+            overall_action = "Indicators suggest a BUY opportunity"
+            badge_class = "signal-buy"
+        elif overall_score >= 45:
+            overall_label = "NEUTRAL"
+            overall_emoji = "🟡"
+            overall_action = "Indicators are mixed — HOLD or wait for clarity"
+            badge_class = "signal-hold"
+        else:
+            overall_label = "BEARISH"
+            overall_emoji = "🔴"
+            overall_action = "Indicators suggest caution — consider SELLING"
+            badge_class = "signal-sell"
+
+        st.markdown(f"""
+        <div style="text-align:center; margin:0.5rem 0 1.5rem 0;">
+            <span class="signal-badge {badge_class}">{overall_emoji} {overall_label} — Score: {overall_score:.0f}/100</span>
+            <p style="color:#94a3b8; margin-top:0.5rem; font-size:0.9rem;">{overall_action}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Gauges Row
+        g1, g2, g3 = st.columns(3)
+        with g1:
+            st.plotly_chart(build_gauge_chart(overall_score, "Overall Score"), use_container_width=True)
+        with g2:
+            st.plotly_chart(build_gauge_chart(scores['RSI']['score'], "RSI Signal"), use_container_width=True)
+        with g3:
+            st.plotly_chart(build_gauge_chart(scores['MACD']['score'], "MACD Signal"), use_container_width=True)
+
+        # Radar Chart + Signal Cards
+        radar_col, cards_col = st.columns([1, 1])
+
+        with radar_col:
+            st.markdown("#### 🕸️ Signal Radar")
+            radar = build_radar_chart(scores)
+            st.plotly_chart(radar, use_container_width=True)
+
+        with cards_col:
+            st.markdown("#### 📋 Signal Breakdown")
+            for name, data in scores.items():
+                color = data['color']
+                signal = data['signal']
+                detail = data['detail']
+                score = data['score']
+
+                # Progress bar width
+                bar_pct = score
+
+                st.markdown(f"""
+                <div style="
+                    background: linear-gradient(135deg, #1a1a2e, #16213e);
+                    border: 1px solid rgba(99,102,241,0.15);
+                    border-left: 4px solid {color};
+                    border-radius: 10px;
+                    padding: 0.8rem 1rem;
+                    margin-bottom: 0.6rem;
+                ">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="color:#e2e8f0; font-weight:600; font-size:0.9rem;">{name}</span>
+                        <span style="color:{color}; font-weight:700; font-size:0.85rem;">{signal} ({score})</span>
+                    </div>
+                    <div style="color:#94a3b8; font-size:0.75rem; margin-top:0.3rem;">{detail}</div>
+                    <div style="background:#0f172a; border-radius:4px; height:6px; margin-top:0.4rem; overflow:hidden;">
+                        <div style="background:{color}; width:{bar_pct}%; height:100%; border-radius:4px; transition:width 0.5s;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # ── Quick Guide for Beginners ──
+        with st.expander("📖 What do these signals mean? (Click to learn)", expanded=False):
+            st.markdown("""
+            | Indicator | What it measures | How to read it |
+            |-----------|-----------------|----------------|
+            | **RSI** | Is the stock overbought or oversold? | Below 30 = oversold (might go UP) · Above 70 = overbought (might go DOWN) |
+            | **MACD** | Is momentum increasing or decreasing? | Green bars growing = price going up faster · Red bars growing = price going down faster |
+            | **Moving Avg** | Is the trend up or down? | Price ABOVE the lines = uptrend 📈 · Price BELOW the lines = downtrend 📉 |
+            | **Bollinger** | Is price at an extreme? | Near bottom band = cheap · Near top band = expensive |
+            | **Volume** | Is there conviction behind the move? | High volume + price up = strong buying · High volume + price down = strong selling |
+            | **Fundamentals** | Is the company financially healthy? | Low P/E + High ROE + Low Debt = 💪 strong company |
+
+            ---
+
+            **🟢 Score 65+ (Bullish):** More indicators point UP → Consider buying
+
+            **🟡 Score 35-65 (Neutral):** Mixed signals → Wait or hold
+
+            **🔴 Score below 35 (Bearish):** More indicators point DOWN → Consider selling or staying out
+
+            **⚠️ Remember:** No indicator is 100% accurate. Always use multiple signals together and never invest money you can't afford to lose.
+            """)
 
         # ── AI Analysis ──
         if run_ai:
